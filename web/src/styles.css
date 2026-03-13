@@ -1,0 +1,108 @@
+:root {
+  font-family: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  color: #0f172a;
+}
+
+body {
+  margin: 0;
+  background: #f4f6fb;
+}
+
+.app {
+  min-height: 100vh;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 40%, #f8fafc 100%);
+}
+
+.app-header {
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 24px;
+}
+
+.app-content {
+  padding: 24px;
+}
+
+.import-row .ant-card,
+.preview-row .ant-card {
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.preview-card {
+  min-height: 360px;
+}
+
+.tree-actions {
+  margin-bottom: 12px;
+}
+
+.tag-select {
+  margin-bottom: 12px;
+}
+
+.tag-list {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  cursor: pointer;
+}
+
+.field-table {
+  display: grid;
+  gap: 4px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 0.5fr 1.5fr;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.field-head {
+  font-weight: 600;
+  background: #e2e8f0;
+}
+
+.floating-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 20px;
+  background: #ffffff;
+  border-radius: 999px;
+  padding: 10px 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.2);
+}
+
+.import-row .ant-card,
+.preview-row .ant-card {
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.import-card {
+    height: 100%;
+    min-height: 280px;
+}
+
+.import-card .ant-form-item:last-child {
+    margin-bottom: 0;
+}
+
+.import-card .ant-upload-dragger {
+    height: 200px !important;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}

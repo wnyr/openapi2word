@@ -1,0 +1,24 @@
+.idea
+*.iml
+*.ipr
+*.iws
+/logs/
+/*-*/target/
+
+# Maven
+target/
+
+# Log
+*.log
+
+# Systme
+.DS_Store
+.AppleDouble
+Thumbs.db
+
+# Ignore node_modules in web directory
+web/node_modules
+
+# Ignore server file
+/server
+
