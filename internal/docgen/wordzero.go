@@ -425,6 +425,15 @@ func buildBodyExample(fields []model.Field) string {
 	if len(fields) == 0 {
 		return ""
 	}
+	// 若只有一个 body 字段，直接输出该字段示例，避免额外包一层 {"body": ...}
+	if len(fields) == 1 && strings.EqualFold(fields[0].Name, "body") {
+		val := exampleValue(fields[0], 0, map[string]bool{})
+		b, err := json.MarshalIndent(val, "", "  ")
+		if err != nil {
+			return "{}"
+		}
+		return string(b)
+	}
 	return buildExampleJSON(fields)
 }
 
