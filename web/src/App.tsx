@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -31,8 +31,12 @@ const { Header, Content } = Layout;
 const { Title, Text } = Typography;
 
 function buildTree(doc: APIDocument): DataNode[] {
+  return buildTreeFromEndpoints(doc.endpoints);
+}
+
+function buildTreeFromEndpoints(endpoints: Endpoint[]): DataNode[] {
   const groups = new Map<string, Endpoint[]>();
-  for (const ep of doc.endpoints) {
+  for (const ep of endpoints) {
     const tag = ep.tag || '未分组';
     if (!groups.has(tag)) groups.set(tag, []);
     groups.get(tag)!.push(ep);
@@ -41,7 +45,7 @@ function buildTree(doc: APIDocument): DataNode[] {
     title: tag,
     key: `tag:${tag}`,
     children: eps.map((e) => ({
-      title: `${e.method} ${e.path}`,
+      title: `${e.summary || e.operation_id || e.path} ${e.path}`,
       key: e.id,
       isLeaf: true
     }))
@@ -111,13 +115,28 @@ function EndpointPreview({ endpoint }: { endpoint?: Endpoint }) {
 }
 
 export default function App() {
+  const [form] = Form.useForm();
   const [doc, setDoc] = useState<APIDocument | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [activeEndpoint, setActiveEndpoint] = useState<Endpoint | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
 
   const endpoints = doc?.endpoints ?? [];
-  const treeData = useMemo(() => (doc ? buildTree(doc) : []), [doc]);
+  const filteredEndpoints = useMemo(() => {
+    if (!doc) return [];
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) return doc.endpoints;
+    return doc.endpoints.filter((e) => {
+      const hay = [e.path, e.method, e.summary, e.operation_id, e.tag]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(keyword);
+    });
+  }, [doc, search]);
+
+  const treeData = useMemo(() => (doc ? buildTreeFromEndpoints(filteredEndpoints) : []), [doc, filteredEndpoints]);
   const allEndpointKeys = useMemo(() => endpoints.map((e) => e.id), [endpoints]);
   const selectedCount = selectedKeys.filter((k) => endpoints.some((e) => e.id === k)).length;
 
@@ -143,6 +162,7 @@ export default function App() {
       setDoc(parsed);
       setSelectedKeys([]);
       setActiveEndpoint(undefined);
+      localStorage.setItem('lastSwaggerUrl', values.url);
       message.success('解析成功');
     } catch (err) {
       message.error('解析失败');
@@ -166,6 +186,13 @@ export default function App() {
     }
     return false;
   };
+
+  useEffect(() => {
+    const last = localStorage.getItem('lastSwaggerUrl');
+    if (last) {
+      form.setFieldsValue({ url: last });
+    }
+  }, [form]);
 
   const handleGenerate = async (meta: { title: string; author: string; version: string }) => {
     if (!doc) return;
@@ -191,13 +218,13 @@ export default function App() {
 
   const tagGroups = useMemo(() => {
     const groups = new Map<string, string[]>();
-    for (const ep of endpoints) {
+    for (const ep of filteredEndpoints) {
       const tag = ep.tag || '未分组';
       if (!groups.has(tag)) groups.set(tag, []);
       groups.get(tag)!.push(ep.id);
     }
     return Array.from(groups.entries());
-  }, [endpoints]);
+  }, [filteredEndpoints]);
 
   const toggleTag = (tag: string) => {
     const ids = tagGroups.find(([t]) => t === tag)?.[1] ?? [];
@@ -214,15 +241,25 @@ export default function App() {
   return (
     <Layout className="app">
       <Header className="app-header">
-        <Title level={3} style={{ margin: 0, color: '#0f172a' }}>OpenAPI2Word</Title>
+        <Title
+          level={3}
+          style={{ margin: 0, color: '#0f172a', cursor: 'pointer' }}
+          onClick={() => {
+            setDoc(null);
+            setSelectedKeys([]);
+            setActiveEndpoint(undefined);
+          }}
+        >
+          OpenAPI2Word
+        </Title>
         <Text type="secondary">Swagger/OpenAPI 文档转 Word</Text>
       </Header>
       <Content className="app-content">
         {!doc ? (
-          <Row gutter={16} className="import-row">
-            <Col xs={24} md={12}>
+          <Row gutter={[16, 16]} className="import-row">
+            <Col xs={24}>
               <Card title="导入 Swagger JSON 地址" className="import-card">
-                <Form layout="vertical" onFinish={handleParseUrl}>
+                <Form form={form} layout="vertical" onFinish={handleParseUrl}>
                   <Form.Item name="url" label="Swagger JSON URL" rules={[{ required: true }]}> 
                     <Input placeholder="https://example.com/openapi.json" />
                   </Form.Item>
@@ -230,7 +267,7 @@ export default function App() {
                 </Form>
               </Card>
             </Col>
-            <Col xs={24} md={12}>
+            <Col xs={24}>
               <Card title="上传 JSON/YAML 文件" className="import-card">
                 <Upload.Dragger multiple={false} beforeUpload={handleUpload} showUploadList={false}>
                   <p className="ant-upload-drag-icon">
@@ -249,31 +286,47 @@ export default function App() {
                   <Button size="small" onClick={checkAll}>全选</Button>
                   <Button size="small" onClick={clearAll}>清空</Button>
                 </Space>
-                <div className="tag-select">
-                  <Text type="secondary">按 Tag 选择：</Text>
-                  <div className="tag-list">
-                    {tagGroups.map(([tag]) => {
-                      const ids = tagGroups.find(([t]) => t === tag)?.[1] ?? [];
-                      const allSelected = ids.every((id) => selectedKeys.includes(id));
-                      return (
-                        <Tag
-                          key={tag}
-                          color={allSelected ? 'blue' : 'default'}
-                          className="tag-chip"
-                          onClick={() => toggleTag(tag)}
-                        >
-                          {tag}
-                        </Tag>
-                      );
-                    })}
-                  </div>
-                </div>
+                <Input.Search
+                  placeholder="搜索接口"
+                  allowClear
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  style={{ marginBottom: 12 }}
+                />
+                <Collapse
+                  items={[
+                    {
+                      key: 'tags',
+                      label: '按 Tag 选择',
+                      children: (
+                        <div className="tag-list">
+                          {tagGroups.map(([tag]) => {
+                            const ids = tagGroups.find(([t]) => t === tag)?.[1] ?? [];
+                            const allSelected = ids.every((id) => selectedKeys.includes(id));
+                            return (
+                              <Tag
+                                key={tag}
+                                color={allSelected ? 'blue' : 'default'}
+                                className="tag-chip"
+                                onClick={() => toggleTag(tag)}
+                              >
+                                {tag}
+                              </Tag>
+                            );
+                          })}
+                        </div>
+                      )
+                    }
+                  ]}
+                  style={{ marginBottom: 12 }}
+                />
                 <Tree
                   checkable
                   onSelect={onSelect}
                   onCheck={onCheck}
                   checkedKeys={selectedKeys}
                   treeData={treeData}
+                  defaultExpandAll
                 />
               </Card>
             </Col>

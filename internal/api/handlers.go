@@ -1,9 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/wnyr/openapi2word/internal/docgen"
@@ -29,42 +31,10 @@ func RegisterRoutes(r *gin.Engine) {
 }
 
 func handleParse(c *gin.Context) {
-	var data []byte
-
-	file, err := c.FormFile("file")
-	if err == nil && file != nil {
-		f, err := file.Open()
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		defer f.Close()
-		data, err = io.ReadAll(f)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	} else {
-		var req ParseRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "file or url required"})
-			return
-		}
-		if strings.TrimSpace(req.URL) == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "url required"})
-			return
-		}
-		resp, err := http.Get(req.URL)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		defer resp.Body.Close()
-		data, err = io.ReadAll(resp.Body)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+	data, err := readParsePayload(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	doc, err := parser.ParseDocument(data)
@@ -93,4 +63,35 @@ func handleGenerate(c *gin.Context) {
 	filename := "api.docx"
 	c.Header("Content-Disposition", "attachment; filename="+filename)
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes)
+}
+
+func readParsePayload(c *gin.Context) ([]byte, error) {
+	file, err := c.FormFile("file")
+	if err == nil && file != nil {
+		f, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return io.ReadAll(f)
+	}
+
+	var req ParseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return nil, fmt.Errorf("file or url required")
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		return nil, fmt.Errorf("url required")
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(req.URL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("fetch failed: %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
 }

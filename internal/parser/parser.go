@@ -37,9 +37,17 @@ func ParseDocument(data []byte) (*model.APIDocument, error) {
 		if err := json.Unmarshal(data, &v2); err != nil {
 			return nil, fmt.Errorf("invalid swagger v2: %w", err)
 		}
+		normalizeV2Refs(&v2)
+		normalizeV2MissingDefinitions(&v2)
+		normalizeV2BodyParameters(&v2)
+		// 优先走 v2 直接解析，避免 v2->v3 转换造成字段丢失
+		if out, err := buildModelFromV2(&v2); err == nil {
+			return out, nil
+		}
+		// 回退到 v2->v3 转换
 		doc, err := openapi2conv.ToV3(&v2)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert swagger v2 to v3: %w", err)
+			return nil, err
 		}
 		return buildModel(doc)
 	}
@@ -51,6 +59,8 @@ func ParseDocument(data []byte) (*model.APIDocument, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load openapi v3: %w", err)
 	}
+
+	normalizeV3Refs(doc)
 
 	if err := loader.ResolveRefsIn(doc, nil); err != nil {
 		return nil, err
@@ -70,6 +80,642 @@ func normalizeJSONorYAML(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid json/yaml: %w", err)
 	}
 	return json.Marshal(ys)
+}
+
+// normalizeV3Refs 将 v3 中不存在的泛型/非法 schema 引用替换为已有的基础定义。
+// 例如 RestResponse«Void» -> RestResponse（当基础定义存在时）。
+func normalizeV3Refs(doc *openapi3.T) {
+	if doc == nil || doc.Components.Schemas == nil {
+		return
+	}
+	names := map[string]bool{}
+	for k := range doc.Components.Schemas {
+		names[k] = true
+	}
+
+	replaceRef := func(ref *openapi3.SchemaRef) {
+		if ref == nil || ref.Ref == "" {
+			return
+		}
+		parts := strings.Split(ref.Ref, "/")
+		if len(parts) == 0 {
+			return
+		}
+		name := parts[len(parts)-1]
+		if names[name] {
+			return
+		}
+		base := baseDefName(name)
+		if base != name && names[base] {
+			parts[len(parts)-1] = base
+			ref.Ref = strings.Join(parts, "/")
+		}
+	}
+
+	var walkSchema func(s *openapi3.Schema)
+	walkSchema = func(s *openapi3.Schema) {
+		if s == nil {
+			return
+		}
+		if s.Not != nil {
+			replaceRef(s.Not)
+			if s.Not.Value != nil {
+				walkSchema(s.Not.Value)
+			}
+		}
+		for _, r := range s.AllOf {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		for _, r := range s.AnyOf {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		for _, r := range s.OneOf {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		if s.Items != nil {
+			replaceRef(s.Items)
+			if s.Items.Value != nil {
+				walkSchema(s.Items.Value)
+			}
+		}
+		for _, r := range s.Properties {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		if r := s.AdditionalProperties.Schema; r != nil {
+			replaceRef(r)
+			if r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+	}
+
+	// components schemas
+	for _, r := range doc.Components.Schemas {
+		replaceRef(r)
+		if r != nil && r.Value != nil {
+			walkSchema(r.Value)
+		}
+	}
+
+	// components parameters
+	for _, p := range doc.Components.Parameters {
+		if p == nil || p.Value == nil {
+			continue
+		}
+		replaceRef(p.Value.Schema)
+		if p.Value.Schema != nil && p.Value.Schema.Value != nil {
+			walkSchema(p.Value.Schema.Value)
+		}
+		for _, mt := range p.Value.Content {
+			if mt == nil || mt.Schema == nil {
+				continue
+			}
+			replaceRef(mt.Schema)
+			if mt.Schema.Value != nil {
+				walkSchema(mt.Schema.Value)
+			}
+		}
+	}
+
+	// components requestBodies/responses/headers
+	for _, rb := range doc.Components.RequestBodies {
+		if rb == nil || rb.Value == nil {
+			continue
+		}
+		for _, mt := range rb.Value.Content {
+			if mt == nil || mt.Schema == nil {
+				continue
+			}
+			replaceRef(mt.Schema)
+			if mt.Schema.Value != nil {
+				walkSchema(mt.Schema.Value)
+			}
+		}
+	}
+	for _, resp := range doc.Components.Responses {
+		if resp == nil || resp.Value == nil {
+			continue
+		}
+		for _, mt := range resp.Value.Content {
+			if mt == nil || mt.Schema == nil {
+				continue
+			}
+			replaceRef(mt.Schema)
+			if mt.Schema.Value != nil {
+				walkSchema(mt.Schema.Value)
+			}
+		}
+	}
+	for _, h := range doc.Components.Headers {
+		if h == nil || h.Value == nil {
+			continue
+		}
+		replaceRef(h.Value.Schema)
+		if h.Value.Schema != nil && h.Value.Schema.Value != nil {
+			walkSchema(h.Value.Schema.Value)
+		}
+	}
+
+	// paths
+	for _, item := range doc.Paths.Map() {
+		if item == nil {
+			continue
+		}
+		for _, p := range item.Parameters {
+			if p == nil || p.Value == nil {
+				continue
+			}
+			replaceRef(p.Value.Schema)
+			if p.Value.Schema != nil && p.Value.Schema.Value != nil {
+				walkSchema(p.Value.Schema.Value)
+			}
+			for _, mt := range p.Value.Content {
+				if mt == nil || mt.Schema == nil {
+					continue
+				}
+				replaceRef(mt.Schema)
+				if mt.Schema.Value != nil {
+					walkSchema(mt.Schema.Value)
+				}
+			}
+		}
+		for _, op := range item.Operations() {
+			if op == nil {
+				continue
+			}
+			for _, p := range op.Parameters {
+				if p == nil || p.Value == nil {
+					continue
+				}
+				replaceRef(p.Value.Schema)
+				if p.Value.Schema != nil && p.Value.Schema.Value != nil {
+					walkSchema(p.Value.Schema.Value)
+				}
+				for _, mt := range p.Value.Content {
+					if mt == nil || mt.Schema == nil {
+						continue
+					}
+					replaceRef(mt.Schema)
+					if mt.Schema.Value != nil {
+						walkSchema(mt.Schema.Value)
+					}
+				}
+			}
+			if op.RequestBody != nil && op.RequestBody.Value != nil {
+				for _, mt := range op.RequestBody.Value.Content {
+					if mt == nil || mt.Schema == nil {
+						continue
+					}
+					replaceRef(mt.Schema)
+					if mt.Schema.Value != nil {
+						walkSchema(mt.Schema.Value)
+					}
+				}
+			}
+			if op.Responses != nil {
+				for _, r := range op.Responses.Map() {
+					if r == nil || r.Value == nil {
+						continue
+					}
+					for _, mt := range r.Value.Content {
+						if mt == nil || mt.Schema == nil {
+							continue
+						}
+						replaceRef(mt.Schema)
+						if mt.Schema.Value != nil {
+							walkSchema(mt.Schema.Value)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// normalizeV2Refs 处理 v2 definitions 中不合法的 ref 名称（如包含“/”）。
+// 将 definitions key 和所有 $ref 同步替换为安全名称，避免 v2->v3 解析失败。
+func normalizeV2Refs(doc *openapi2.T) {
+	if doc == nil {
+		return
+	}
+	rename := map[string]string{}
+	if doc.Definitions != nil {
+		for k := range doc.Definitions {
+			n := sanitizeDefName(k)
+			if n != k {
+				rename[k] = n
+			}
+		}
+		if len(rename) > 0 {
+			newDefs := map[string]*openapi2.SchemaRef{}
+			for k, v := range doc.Definitions {
+				if nk, ok := rename[k]; ok {
+					newDefs[nk] = v
+				} else {
+					newDefs[k] = v
+				}
+			}
+			doc.Definitions = newDefs
+		}
+	}
+
+	defNames := map[string]bool{}
+	for k := range doc.Definitions {
+		defNames[k] = true
+	}
+
+	replaceRef := func(ref *openapi2.SchemaRef) {
+		if ref == nil || ref.Ref == "" {
+			return
+		}
+		if strings.HasPrefix(ref.Ref, "#/definitions/") {
+			name := strings.TrimPrefix(ref.Ref, "#/definitions/")
+			if nk, ok := rename[name]; ok {
+				ref.Ref = "#/definitions/" + nk
+				return
+			}
+			nn := sanitizeDefName(name)
+			if nn != name {
+				ref.Ref = "#/definitions/" + nn
+				name = nn
+			}
+			if !defNames[name] {
+				base := baseDefName(name)
+				if base != name && defNames[base] {
+					ref.Ref = "#/definitions/" + base
+				}
+			}
+		}
+	}
+
+	visitSchema := func(s *openapi2.Schema) {}
+	var walkSchema func(s *openapi2.Schema)
+	walkSchema = func(s *openapi2.Schema) {
+		if s == nil {
+			return
+		}
+		if s.Not != nil {
+			replaceRef(s.Not)
+			if s.Not.Value != nil {
+				walkSchema(s.Not.Value)
+			}
+		}
+		for _, r := range s.AllOf {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		if s.Items != nil {
+			replaceRef(s.Items)
+			if s.Items.Value != nil {
+				walkSchema(s.Items.Value)
+			}
+		}
+		for _, r := range s.Properties {
+			replaceRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		_ = visitSchema
+	}
+
+	// walk definitions
+	for _, r := range doc.Definitions {
+		replaceRef(r)
+		if r != nil && r.Value != nil {
+			walkSchema(r.Value)
+		}
+	}
+	// walk paths/operations parameters and responses
+	for _, item := range doc.Paths {
+		if item == nil {
+			continue
+		}
+		for _, p := range item.Parameters {
+			if p == nil {
+				continue
+			}
+			replaceRef(p.Schema)
+			replaceRef(p.Items)
+			if p.Schema != nil && p.Schema.Value != nil {
+				walkSchema(p.Schema.Value)
+			}
+		}
+		for _, op := range item.Operations() {
+			if op == nil {
+				continue
+			}
+			for _, p := range op.Parameters {
+				if p == nil {
+					continue
+				}
+				replaceRef(p.Schema)
+				replaceRef(p.Items)
+				if p.Schema != nil && p.Schema.Value != nil {
+					walkSchema(p.Schema.Value)
+				}
+			}
+			for _, r := range op.Responses {
+				if r == nil {
+					continue
+				}
+				replaceRef(r.Schema)
+				if r.Schema != nil && r.Schema.Value != nil {
+					walkSchema(r.Schema.Value)
+				}
+			}
+		}
+	}
+	// walk global parameters/responses
+	for _, p := range doc.Parameters {
+		if p == nil {
+			continue
+		}
+		replaceRef(p.Schema)
+		replaceRef(p.Items)
+		if p.Schema != nil && p.Schema.Value != nil {
+			walkSchema(p.Schema.Value)
+		}
+	}
+	for _, r := range doc.Responses {
+		if r == nil {
+			continue
+		}
+		replaceRef(r.Schema)
+		if r.Schema != nil && r.Schema.Value != nil {
+			walkSchema(r.Schema.Value)
+		}
+	}
+}
+
+func sanitizeDefName(s string) string {
+	if s == "" {
+		return s
+	}
+	r := strings.NewReplacer("/", "_", "~", "_")
+	return r.Replace(s)
+}
+
+func baseDefName(s string) string {
+	if s == "" {
+		return s
+	}
+	if i := strings.Index(s, "«"); i >= 0 {
+		return s[:i]
+	}
+	if i := strings.Index(s, "<"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// normalizeV2MissingDefinitions 为缺失的 definitions 补一个最小 schema（避免转换时找不到 ref）。
+func normalizeV2MissingDefinitions(doc *openapi2.T) {
+	if doc == nil {
+		return
+	}
+	if doc.Definitions == nil {
+		doc.Definitions = map[string]*openapi2.SchemaRef{}
+	}
+
+	refs := map[string]bool{}
+	addRef := func(ref *openapi2.SchemaRef) {
+		if ref == nil || ref.Ref == "" {
+			return
+		}
+		if strings.HasPrefix(ref.Ref, "#/definitions/") {
+			name := strings.TrimPrefix(ref.Ref, "#/definitions/")
+			name = sanitizeDefName(name)
+			base := baseDefName(name)
+			if base != name {
+				if _, ok := doc.Definitions[base]; ok {
+					return
+				}
+			}
+			refs[name] = true
+		}
+	}
+
+	var walkSchema func(s *openapi2.Schema)
+	walkSchema = func(s *openapi2.Schema) {
+		if s == nil {
+			return
+		}
+		if s.Not != nil {
+			addRef(s.Not)
+			if s.Not.Value != nil {
+				walkSchema(s.Not.Value)
+			}
+		}
+		for _, r := range s.AllOf {
+			addRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+		if s.Items != nil {
+			addRef(s.Items)
+			if s.Items.Value != nil {
+				walkSchema(s.Items.Value)
+			}
+		}
+		for _, r := range s.Properties {
+			addRef(r)
+			if r != nil && r.Value != nil {
+				walkSchema(r.Value)
+			}
+		}
+	}
+
+	// definitions
+	for _, r := range doc.Definitions {
+		addRef(r)
+		if r != nil && r.Value != nil {
+			walkSchema(r.Value)
+		}
+	}
+	// paths
+	for _, item := range doc.Paths {
+		if item == nil {
+			continue
+		}
+		for _, p := range item.Parameters {
+			if p == nil {
+				continue
+			}
+			addRef(p.Schema)
+			addRef(p.Items)
+			if p.Schema != nil && p.Schema.Value != nil {
+				walkSchema(p.Schema.Value)
+			}
+		}
+		for _, op := range item.Operations() {
+			if op == nil {
+				continue
+			}
+			for _, p := range op.Parameters {
+				if p == nil {
+					continue
+				}
+				addRef(p.Schema)
+				addRef(p.Items)
+				if p.Schema != nil && p.Schema.Value != nil {
+					walkSchema(p.Schema.Value)
+				}
+			}
+			for _, r := range op.Responses {
+				if r == nil {
+					continue
+				}
+				addRef(r.Schema)
+				if r.Schema != nil && r.Schema.Value != nil {
+					walkSchema(r.Schema.Value)
+				}
+			}
+		}
+	}
+	// global parameters/responses
+	for _, p := range doc.Parameters {
+		if p == nil {
+			continue
+		}
+		addRef(p.Schema)
+		addRef(p.Items)
+		if p.Schema != nil && p.Schema.Value != nil {
+			walkSchema(p.Schema.Value)
+		}
+	}
+	for _, r := range doc.Responses {
+		if r == nil {
+			continue
+		}
+		addRef(r.Schema)
+		if r.Schema != nil && r.Schema.Value != nil {
+			walkSchema(r.Schema.Value)
+		}
+	}
+
+	for name := range refs {
+		if _, ok := doc.Definitions[name]; ok {
+			continue
+		}
+		var schema *openapi2.Schema
+		if strings.EqualFold(name, "List") {
+			schema = &openapi2.Schema{
+				Type:  &openapi3.Types{"array"},
+				Items: &openapi2.SchemaRef{Value: &openapi2.Schema{}},
+			}
+		} else {
+			schema = &openapi2.Schema{Type: &openapi3.Types{"object"}}
+		}
+		doc.Definitions[name] = &openapi2.SchemaRef{Value: schema}
+	}
+}
+
+// normalizeV2BodyParameters 合并 v2 多个 body 参数为单一对象，避免转换失败。
+func normalizeV2BodyParameters(doc *openapi2.T) {
+	if doc == nil || doc.Paths == nil {
+		return
+	}
+	for _, item := range doc.Paths {
+		if item == nil {
+			continue
+		}
+		// 先移除 path 级 body 参数，交给 operation 合并
+		item.Parameters, _ = splitBodyParams(item.Parameters)
+
+		for _, op := range item.Operations() {
+			if op == nil {
+				continue
+			}
+			nonBody, bodyParams := splitBodyParams(op.Parameters)
+			if len(bodyParams) <= 1 {
+				op.Parameters = append(nonBody, bodyParams...)
+				continue
+			}
+
+			merged := mergeBodyParams(bodyParams)
+			op.Parameters = append(nonBody, merged)
+		}
+	}
+}
+
+func splitBodyParams(params openapi2.Parameters) (openapi2.Parameters, openapi2.Parameters) {
+	var nonBody openapi2.Parameters
+	var body openapi2.Parameters
+	for _, p := range params {
+		if p == nil {
+			continue
+		}
+		if strings.EqualFold(p.In, "body") {
+			body = append(body, p)
+		} else {
+			nonBody = append(nonBody, p)
+		}
+	}
+	return nonBody, body
+}
+
+func mergeBodyParams(params openapi2.Parameters) *openapi2.Parameter {
+	props := openapi2.Schemas{}
+	required := []string{}
+	anyRequired := false
+
+	for i, p := range params {
+		if p == nil {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("body%d", i+1)
+		}
+		if p.Required {
+			required = append(required, name)
+			anyRequired = true
+		}
+
+		var ref *openapi2.SchemaRef
+		if p.Schema != nil {
+			ref = p.Schema
+		} else {
+			ref = &openapi2.SchemaRef{Value: &openapi2.Schema{
+				Type:   p.Type,
+				Format: p.Format,
+				Items:  p.Items,
+			}}
+		}
+		props[name] = ref
+	}
+
+	schema := &openapi2.Schema{
+		Type:       &openapi3.Types{"object"},
+		Properties: props,
+	}
+	if anyRequired {
+		schema.Required = required
+	}
+
+	return &openapi2.Parameter{
+		In:          "body",
+		Name:        "body",
+		Description: "Merged body parameters",
+		Required:    anyRequired,
+		Schema:      &openapi2.SchemaRef{Value: schema},
+	}
 }
 
 // buildModel 将已解析的 OpenAPI v3 文档映射为 APIDocument。
@@ -147,6 +793,303 @@ func buildModel(doc *openapi3.T) (*model.APIDocument, error) {
 	}
 
 	return out, nil
+}
+
+// buildModelFromV2 直接从 Swagger v2 构建 APIDocument，避免 v2->v3 转换失败。
+func buildModelFromV2(doc *openapi2.T) (*model.APIDocument, error) {
+	out := &model.APIDocument{}
+	out.Info = model.Info{
+		Title:       doc.Info.Title,
+		Version:     doc.Info.Version,
+		Description: doc.Info.Description,
+	}
+	if doc.Host != "" {
+		scheme := "http"
+		if len(doc.Schemes) > 0 {
+			scheme = doc.Schemes[0]
+		}
+		out.Servers = append(out.Servers, scheme+"://"+doc.Host+doc.BasePath)
+	}
+	for _, t := range doc.Tags {
+		if t != nil {
+			out.Tags = append(out.Tags, model.Tag{Name: t.Name, Description: t.Description})
+		}
+	}
+
+	for _, path := range sortedV2PathKeys(doc.Paths) {
+		item := doc.Paths[path]
+		if item == nil {
+			continue
+		}
+		ops := item.Operations()
+		for _, method := range sortedV2OpKeys(ops) {
+			op := ops[method]
+			if op == nil {
+				continue
+			}
+			e := model.Endpoint{
+				ID:          buildEndpointID(method, path, op.OperationID),
+				Path:        path,
+				Method:      strings.ToUpper(method),
+				Summary:     op.Summary,
+				Description: op.Description,
+				OperationID: op.OperationID,
+			}
+			if len(op.Tags) > 0 {
+				e.Tag = op.Tags[0]
+			}
+
+			// 合并参数
+			params := append(openapi2.Parameters{}, item.Parameters...)
+			params = append(params, op.Parameters...)
+
+			// 处理非 body 参数
+			for _, p := range params {
+				if p == nil {
+					continue
+				}
+				if strings.EqualFold(p.In, "body") {
+					continue
+				}
+				f := v2ParamToField(p, doc.Definitions)
+				e.Request = append(e.Request, f)
+			}
+
+			// 处理 body 参数（合并后只会有一个）
+			for _, p := range params {
+				if p == nil || !strings.EqualFold(p.In, "body") || p.Schema == nil {
+					continue
+				}
+				fields := v2SchemaToFields("body", p.Schema, p.Required, doc.Definitions)
+				setLocationRecursive(fields, "body")
+				e.Request = append(e.Request, fields...)
+				break
+			}
+
+			// 处理响应
+			if resp := pickV2Response(op.Responses); resp != nil && resp.Schema != nil {
+				fields := v2SchemaToFields("response", resp.Schema, false, doc.Definitions)
+				e.Response = append(e.Response, fields...)
+			}
+
+			out.Endpoints = append(out.Endpoints, e)
+		}
+	}
+	return out, nil
+}
+
+func pickV2Response(responses map[string]*openapi2.Response) *openapi2.Response {
+	if responses == nil {
+		return nil
+	}
+	for _, code := range []string{"200", "201", "202", "204"} {
+		if r, ok := responses[code]; ok {
+			return r
+		}
+	}
+	for code, r := range responses {
+		if strings.HasPrefix(code, "2") {
+			return r
+		}
+	}
+	if r, ok := responses["default"]; ok {
+		return r
+	}
+	return nil
+}
+
+func v2ParamToField(p *openapi2.Parameter, defs map[string]*openapi2.SchemaRef) model.Field {
+	if p.Schema != nil {
+		f := v2SchemaToField(p.Name, p.Schema, p.Required, defs, map[string]bool{})
+		f.Description = p.Description
+		f.Location = p.In
+		return f
+	}
+	field := model.Field{
+		Name:        p.Name,
+		Required:    p.Required,
+		Description: p.Description,
+		Location:    p.In,
+		Type:        "any",
+	}
+	if p.Type != nil && len(p.Type.Slice()) > 0 {
+		field.Type = strings.Join(p.Type.Slice(), "|")
+	}
+	if field.Type == "array" && p.Items != nil {
+		item := v2SchemaToField("item", p.Items, false, defs, map[string]bool{})
+		field.Type = "array<" + item.Type + ">"
+	}
+	if p.Format != "" && (field.Type == "integer" || field.Type == "string" || field.Type == "number") {
+		field.Type = field.Type + "(" + p.Format + ")"
+	}
+	return field
+}
+
+func v2SchemaToFields(rootName string, ref *openapi2.SchemaRef, required bool, defs map[string]*openapi2.SchemaRef) []model.Field {
+	field := v2SchemaToField(rootName, ref, required, defs, map[string]bool{})
+	if rootName == "body" || rootName == "response" {
+		if len(field.Children) > 0 {
+			return field.Children
+		}
+		// 兜底：若响应引用了泛型占位定义（如 RestResponse«Void»），且自身无字段，
+		// 尝试回退到基础定义（如 RestResponse）获取完整字段列表。
+		if ref != nil && ref.Ref != "" {
+			defName := strings.TrimPrefix(ref.Ref, "#/definitions/")
+			defName = sanitizeDefName(defName)
+			base := baseDefName(defName)
+			if base != defName {
+				if def, ok := defs[base]; ok && def != nil {
+					baseField := v2SchemaToField(rootName, def, required, defs, map[string]bool{})
+					if len(baseField.Children) > 0 {
+						return baseField.Children
+					}
+				}
+			}
+		}
+	}
+	if field.Type == "object" && len(field.Children) > 0 {
+		return field.Children
+	}
+	return []model.Field{field}
+}
+
+func v2SchemaToField(name string, ref *openapi2.SchemaRef, required bool, defs map[string]*openapi2.SchemaRef, seen map[string]bool) model.Field {
+	field := model.Field{Name: name, Required: required, Type: "any"}
+	if ref == nil {
+		return field
+	}
+	if ref.Ref != "" {
+		defName := strings.TrimPrefix(ref.Ref, "#/definitions/")
+		defName = sanitizeDefName(defName)
+		if seen[defName] {
+			field.Type = defName
+			return field
+		}
+		seen[defName] = true
+		defer delete(seen, defName)
+		if def, ok := defs[defName]; ok && def != nil {
+			field = v2SchemaToField(name, def, required, defs, seen)
+			base := baseDefName(defName)
+			if base != defName {
+				if baseDef, ok := defs[base]; ok && baseDef != nil {
+					baseField := v2SchemaToField(name, baseDef, required, defs, seen)
+					field = mergeFieldChildren(field, baseField)
+				}
+			}
+			if field.Type == "object" || field.Type == "any" {
+				field.Type = defName
+			}
+			return field
+		}
+		base := baseDefName(defName)
+		if base != defName {
+			if def, ok := defs[base]; ok && def != nil {
+				field = v2SchemaToField(name, def, required, defs, seen)
+				field.Type = base
+				return field
+			}
+		}
+		field.Type = defName
+		return field
+	}
+	if ref.Value == nil {
+		return field
+	}
+	s := ref.Value
+	field.Description = s.Description
+
+	typeName := ""
+	if s.Type != nil && len(s.Type.Slice()) > 0 {
+		typeName = strings.Join(s.Type.Slice(), "|")
+	}
+	if typeName == "" {
+		if len(s.Properties) > 0 {
+			typeName = "object"
+		} else if s.Items != nil {
+			typeName = "array"
+		} else {
+			typeName = "any"
+		}
+	}
+	if s.Format != "" && (typeName == "integer" || typeName == "string" || typeName == "number") {
+		typeName = typeName + "(" + s.Format + ")"
+	}
+	field.Type = typeName
+
+	if typeName == "array" && s.Items != nil {
+		item := v2SchemaToField("item", s.Items, false, defs, seen)
+		field.Type = "array<" + item.Type + ">"
+		field.Children = item.Children
+		return field
+	}
+	if typeName == "object" && len(s.Properties) > 0 {
+		req := map[string]bool{}
+		for _, r := range s.Required {
+			req[r] = true
+		}
+		for _, pname := range sortedV2SchemaKeys(s.Properties) {
+			pref := s.Properties[pname]
+			child := v2SchemaToField(pname, pref, req[pname], defs, seen)
+			field.Children = append(field.Children, child)
+		}
+		return field
+	}
+	return field
+}
+
+// mergeFieldChildren 合并字段的子项（以 primary 为主，补齐 fallback 中缺失的子项）。
+// 用于处理 v2 泛型占位 definitions（如 RestResponse«Void»）缺少公共字段的情况。
+func mergeFieldChildren(primary, fallback model.Field) model.Field {
+	if len(fallback.Children) == 0 {
+		return primary
+	}
+	if len(primary.Children) == 0 {
+		if primary.Type == "" || primary.Type == "any" {
+			primary.Type = fallback.Type
+		}
+		if primary.Description == "" {
+			primary.Description = fallback.Description
+		}
+		primary.Children = fallback.Children
+		return primary
+	}
+	index := map[string]bool{}
+	for _, c := range primary.Children {
+		index[c.Name] = true
+	}
+	for _, c := range fallback.Children {
+		if !index[c.Name] {
+			primary.Children = append(primary.Children, c)
+		}
+	}
+	return primary
+}
+
+func sortedV2PathKeys(m map[string]*openapi2.PathItem) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedV2SchemaKeys(m openapi2.Schemas) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedV2OpKeys(m map[string]*openapi2.Operation) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // buildEndpointID 生成稳定的接口标识。

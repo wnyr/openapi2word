@@ -105,7 +105,7 @@ func addInterfaceTable(d *document.Document, e model.Endpoint, fullURL string) e
 		respBrief = "无"
 	}
 
-	reqRows := countRequestRows(reqGroups)
+	reqRows := countParamRows(reqFields)
 	respRows := countResponseRows(e.Response)
 	baseRows := 4                  // 地址、方式、请求参数、响应参数
 	rows := baseRows + 2 + reqRows // 请求参数说明 + 表头
@@ -144,7 +144,7 @@ func addInterfaceTable(d *document.Document, e model.Endpoint, fullURL string) e
 	r++
 	writeParamHeader(table, r)
 	r++
-	writeRequestRowsByLocation(table, &r, reqGroups)
+	writeParamRows(table, &r, reqFields, true)
 
 	if respRows > 0 {
 		setCell(table, r, 0, "响应参数说明", true)
@@ -153,7 +153,7 @@ func addInterfaceTable(d *document.Document, e model.Endpoint, fullURL string) e
 		r++
 		writeParamHeader(table, r)
 		r++
-		writeResponseRows(table, &r, e.Response)
+		writeParamRows(table, &r, e.Response, false)
 	}
 
 	return nil
@@ -191,32 +191,31 @@ func writeFieldRows(t *document.Table, row *int, fields []model.Field, level int
 	}
 }
 
-// writeResponseRows 按“父级先、子级后”的规则写入响应参数。
+// writeParamRows 按“父级先、子级后”的规则写入参数。
 // 规则：
 // 1. 先写顶层字段（不展开子集）。
 // 2. 对每个包含子集的字段，写“xxx说明”标题行 + 表头 + 该字段的直接子集。
 // 3. 子集中若还有子集，继续按同样规则展开。
-func writeResponseRows(t *document.Table, row *int, fields []model.Field) {
+func writeParamRows(t *document.Table, row *int, fields []model.Field, showRequired bool) {
 	seen := map[string]bool{}
-	writeTopLevelRows(t, row, fields, false)
+	writeTopLevelRows(t, row, fields, showRequired)
 
 	for _, f := range fields {
 		if len(f.Children) == 0 {
 			continue
 		}
-		writeResponseSection(t, row, f, seen)
+		writeParamSection(t, row, f, seen, showRequired)
 	}
 }
 
-// writeResponseSection 写入某个字段的说明段（标题 + 表头 + 直接子集 + 子集递归）。
-func writeResponseSection(t *document.Table, row *int, field model.Field, seen map[string]bool) {
+// writeParamSection 写入某个字段的说明段（标题 + 表头 + 直接子集 + 子集递归）。
+func writeParamSection(t *document.Table, row *int, field model.Field, seen map[string]bool, showRequired bool) {
 	key := responseSectionKey(field)
 	if key != "" && seen[key] {
 		return
 	}
 	if key != "" {
 		seen[key] = true
-		defer delete(seen, key)
 	}
 
 	title := responseSectionTitle(field)
@@ -229,14 +228,14 @@ func writeResponseSection(t *document.Table, row *int, field model.Field, seen m
 	*row++
 
 	// 仅写直接子集，保持层级清晰。
-	writeTopLevelRows(t, row, field.Children, false)
+	writeTopLevelRows(t, row, field.Children, showRequired)
 
 	// 继续处理子集中仍含子集的字段
 	for _, child := range field.Children {
 		if len(child.Children) == 0 {
 			continue
 		}
-		writeResponseSection(t, row, child, seen)
+		writeParamSection(t, row, child, seen, showRequired)
 	}
 }
 
@@ -281,9 +280,6 @@ func countResponseSections(fields []model.Field, seen map[string]bool) int {
 		}
 		total += 2 + len(f.Children) // 标题 + 表头 + 直接子集
 		total += countResponseSections(f.Children, seen)
-		if key != "" {
-			delete(seen, key)
-		}
 	}
 	return total
 }
@@ -496,11 +492,30 @@ func writeRequestRowsByLocation(t *document.Table, row *int, groups []requestGro
 	}
 }
 
-// countRequestRows 统计请求参数展示行数。
-func countRequestRows(groups []requestGroup) int {
+// countParamRows 统计参数展示行数（与 writeParamRows 的规则一致）。
+func countParamRows(fields []model.Field) int {
+	seen := map[string]bool{}
+	total := len(fields)
+	total += countParamSections(fields, seen)
+	return total
+}
+
+// countParamSections 统计“说明段”的行数，不重复计算顶层字段。
+func countParamSections(fields []model.Field, seen map[string]bool) int {
 	total := 0
-	for _, g := range groups {
-		total += countFieldRows(g.Fields)
+	for _, f := range fields {
+		if len(f.Children) == 0 {
+			continue
+		}
+		key := responseSectionKey(f)
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		total += 2 + len(f.Children) // 标题 + 表头 + 直接子集
+		total += countParamSections(f.Children, seen)
 	}
 	return total
 }
