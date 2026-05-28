@@ -169,8 +169,15 @@ export default function App() {
   };
 
   const onCheck = (keys: React.Key[] | { checked: React.Key[] }) => {
-    const checked = Array.isArray(keys) ? keys : keys.checked;
-    setSelectedKeys(checked as string[]);
+    const checked = (Array.isArray(keys) ? keys : keys.checked) as string[];
+    setSelectedKeys((prev) => {
+      // 1. 保留 prev 中依然在 checked 中的 key（维持原有顺序）
+      const retained = prev.filter((k) => checked.includes(k));
+      // 2. 找出 checked 中新增的 key，并追加到末尾
+      const prevSet = new Set(prev);
+      const added = checked.filter((k) => !prevSet.has(k));
+      return [...retained, ...added];
+    });
   };
 
   const checkAll = () => setSelectedKeys(allEndpointKeys);
@@ -249,14 +256,12 @@ export default function App() {
 
   const toggleTag = (tag: string) => {
     const ids = tagGroups.find(([t]) => t === tag)?.[1] ?? [];
-    const set = new Set(selectedKeys);
-    const allSelected = ids.every((id) => set.has(id));
+    const allSelected = ids.every((id) => selectedKeys.includes(id));
     if (allSelected) {
-      ids.forEach((id) => set.delete(id));
+      setSelectedKeys((prev) => prev.filter((k) => !ids.includes(k)));
     } else {
-      ids.forEach((id) => set.add(id));
+      setSelectedKeys((prev) => [...prev, ...ids.filter((id) => !prev.includes(id))]);
     }
-    setSelectedKeys(Array.from(set));
   };
 
   return (

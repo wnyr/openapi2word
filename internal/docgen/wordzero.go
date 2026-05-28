@@ -12,7 +12,7 @@ import (
 )
 
 // BuildDocx 使用 WordZero 将接口文档渲染为 .docx 字节。
-func BuildDocx(doc model.APIDocument, meta model.Meta, selectedIDs map[string]bool) ([]byte, error) {
+func BuildDocx(doc model.APIDocument, meta model.Meta, selectedIDs []string) ([]byte, error) {
 	d := document.New()
 
 	// 统一将标题样式设为黑色 (000000)
@@ -616,11 +616,29 @@ type tagGroup struct {
 	Endpoints []model.Endpoint
 }
 
-func groupEndpointsByTag(endpoints []model.Endpoint, selectedIDs map[string]bool) []tagGroup {
+func groupEndpointsByTag(endpoints []model.Endpoint, selectedIDs []string) []tagGroup {
+	// 1. 构建 ID 映射，方便快速查找
+	epMap := map[string]model.Endpoint{}
+	for _, e := range endpoints {
+		epMap[e.ID] = e
+	}
+
+	// 2. 按选择的顺序遍历
 	order := []string{}
 	group := map[string][]model.Endpoint{}
-	for _, e := range endpoints {
-		if len(selectedIDs) > 0 && !selectedIDs[e.ID] {
+
+	// 如果没有选择任何接口，则默认导出所有（保持向后兼容）
+	ids := selectedIDs
+	if len(ids) == 0 {
+		ids = make([]string, 0, len(endpoints))
+		for _, e := range endpoints {
+			ids = append(ids, e.ID)
+		}
+	}
+
+	for _, id := range ids {
+		e, ok := epMap[id]
+		if !ok {
 			continue
 		}
 		tag := e.Tag
@@ -632,6 +650,7 @@ func groupEndpointsByTag(endpoints []model.Endpoint, selectedIDs map[string]bool
 		}
 		group[tag] = append(group[tag], e)
 	}
+
 	out := make([]tagGroup, 0, len(order))
 	for _, tag := range order {
 		out = append(out, tagGroup{Tag: tag, Endpoints: group[tag]})
