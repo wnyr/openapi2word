@@ -51,11 +51,7 @@ func handleGenerate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	selected := map[string]bool{}
-	for _, id := range req.EndpointIDs {
-		selected[id] = true
-	}
-	bytes, err := docgen.BuildDocx(req.Doc, req.Meta, selected)
+	bytes, err := docgen.BuildDocx(req.Doc, req.Meta, req.EndpointIDs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
