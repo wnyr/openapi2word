@@ -52,23 +52,44 @@ function buildTreeFromEndpoints(endpoints: Endpoint[]): DataNode[] {
   }));
 }
 
-function FieldTable({ fields }: { fields: Field[] }) {
+function FieldTable({ fields, isRequest }: { fields: Field[]; isRequest?: boolean }) {
   return (
     <div className="field-table">
-      <div className="field-row field-head">
-        <div>字段名称</div>
-        <div>字段类型</div>
-        <div>是否必传</div>
-        <div>备注</div>
-      </div>
-      {fields.map((f) => (
-        <div key={f.name} className="field-row">
-          <div>{f.name}</div>
-          <div>{f.type}</div>
-          <div>{f.required ? '是' : ''}</div>
-          <div>{f.description}</div>
-        </div>
-      ))}
+      {isRequest ? (
+        <>
+          <div className="field-row field-head field-req-row">
+            <div>字段名称</div>
+            <div>字段类型</div>
+            <div>参数位置</div>
+            <div>是否必传</div>
+            <div>备注</div>
+          </div>
+          {fields.map((f) => (
+            <div key={f.name} className="field-row field-req-row">
+              <div style={{ fontWeight: 500 }}>{f.name}</div>
+              <div>{f.type}</div>
+              <div style={{ color: '#2563eb', fontWeight: 600 }}>{f.in || 'body'}</div>
+              <div>{f.required ? '是' : '否'}</div>
+              <div>{f.description}</div>
+            </div>
+          ))}
+        </>
+      ) : (
+        <>
+          <div className="field-row field-head field-resp-row">
+            <div>字段名称</div>
+            <div>字段类型</div>
+            <div>备注</div>
+          </div>
+          {fields.map((f) => (
+            <div key={f.name} className="field-row field-resp-row">
+              <div style={{ fontWeight: 500 }}>{f.name}</div>
+              <div>{f.type}</div>
+              <div>{f.description}</div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -100,12 +121,12 @@ function EndpointPreview({ endpoint }: { endpoint?: Endpoint }) {
             {
               key: 'req',
               label: '请求参数',
-              children: <FieldTable fields={endpoint.request} />
+              children: <FieldTable fields={endpoint.request} isRequest={true} />
             },
             {
               key: 'resp',
               label: '响应参数',
-              children: <FieldTable fields={endpoint.response} />
+              children: <FieldTable fields={endpoint.response} isRequest={false} />
             }
           ]}
         />

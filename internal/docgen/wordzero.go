@@ -115,43 +115,43 @@ func addInterfaceTable(d *document.Document, e model.Endpoint, fullURL string) e
 
 	table := d.AddTable(&document.TableConfig{
 		Rows:  rows,
-		Cols:  4,
+		Cols:  5,
 		Width: 8000,
 	})
 
 	r := 0
 	setCell(table, r, 0, "接口地址", true)
 	setCell(table, r, 1, fullURL)
-	mergeRow(table, r, 1, 3)
+	mergeRow(table, r, 1, 4)
 	r++
 	setCell(table, r, 0, "请求方式", true)
 	setCell(table, r, 1, e.Method)
-	mergeRow(table, r, 1, 3)
+	mergeRow(table, r, 1, 4)
 	r++
 	setCell(table, r, 0, "请求参数示例", true)
 	setCodeCell(table, r, 1, buildRequestExamples(reqGroups))
-	mergeRow(table, r, 1, 3)
+	mergeRow(table, r, 1, 4)
 
 	r++
 	setCell(table, r, 0, "响应参数示例", true)
 	setCodeCell(table, r, 1, buildExampleJSON(e.Response))
-	mergeRow(table, r, 1, 3)
+	mergeRow(table, r, 1, 4)
 	r++
 
 	setCell(table, r, 0, "请求参数说明", true)
 	setCell(table, r, 1, "")
-	mergeRow(table, r, 1, 3)
+	mergeRow(table, r, 1, 4)
 	r++
-	writeParamHeader(table, r)
+	writeParamHeader(table, r, true)
 	r++
 	writeParamRows(table, &r, reqFields, true)
 
 	if respRows > 0 {
 		setCell(table, r, 0, "响应参数说明", true)
 		setCell(table, r, 1, "")
-		mergeRow(table, r, 1, 3)
+		mergeRow(table, r, 1, 4)
 		r++
-		writeParamHeader(table, r)
+		writeParamHeader(table, r, false)
 		r++
 		writeParamRows(table, &r, e.Response, false)
 	}
@@ -160,11 +160,19 @@ func addInterfaceTable(d *document.Document, e model.Endpoint, fullURL string) e
 }
 
 // writeParamHeader 写入字段表头行。
-func writeParamHeader(t *document.Table, row int) {
-	setCell(t, row, 0, "字段名称", true)
-	setCell(t, row, 1, "字段类型", true)
-	setCell(t, row, 2, "是否必传", true)
-	setCell(t, row, 3, "备注", true)
+func writeParamHeader(t *document.Table, row int, isRequest ...bool) {
+	if len(isRequest) > 0 && isRequest[0] {
+		setCell(t, row, 0, "字段名称", true)
+		setCell(t, row, 1, "字段类型", true)
+		setCell(t, row, 2, "参数位置", true)
+		setCell(t, row, 3, "是否必传", true)
+		setCell(t, row, 4, "备注", true)
+	} else {
+		setCell(t, row, 0, "字段名称", true)
+		setCell(t, row, 1, "字段类型", true)
+		setCell(t, row, 2, "备注", true)
+		mergeRow(t, row, 2, 4)
+	}
 }
 
 // writeFieldRows 递归写入字段（用于请求参数，父子以缩进展示）。
@@ -177,12 +185,25 @@ func writeFieldRows(t *document.Table, row *int, fields []model.Field, level int
 		}
 		setCell(t, *row, 0, name)
 		setCell(t, *row, 1, f.Type)
-		if showRequired && f.Required {
-			setCell(t, *row, 2, "是")
+		if showRequired {
+			loc := f.Location
+			if loc == "" {
+				loc = "body"
+			}
+			_ = t.SetCellFormattedText(*row, 2, loc, &document.TextFormat{
+				FontColor: "2563eb",
+				Bold:      true,
+			})
+			reqVal := "否"
+			if f.Required {
+				reqVal = "是"
+			}
+			setCell(t, *row, 3, reqVal)
+			setCell(t, *row, 4, f.Description)
 		} else {
-			setCell(t, *row, 2, "否")
+			setCell(t, *row, 2, f.Description)
+			mergeRow(t, *row, 2, 4)
 		}
-		setCell(t, *row, 3, f.Description)
 		*row++
 
 		if len(f.Children) > 0 {
@@ -221,10 +242,10 @@ func writeParamSection(t *document.Table, row *int, field model.Field, seen map[
 	title := responseSectionTitle(field)
 	setCell(t, *row, 0, title, true)
 	setCell(t, *row, 1, "")
-	mergeRow(t, *row, 1, 3)
+	mergeRow(t, *row, 1, 4)
 	*row++
 
-	writeParamHeader(t, *row)
+	writeParamHeader(t, *row, showRequired)
 	*row++
 
 	// 仅写直接子集，保持层级清晰。
@@ -244,14 +265,25 @@ func writeTopLevelRows(t *document.Table, row *int, fields []model.Field, showRe
 	for _, f := range fields {
 		setCell(t, *row, 0, f.Name)
 		setCell(t, *row, 1, f.Type)
-		if showRequired && f.Required {
-			setCell(t, *row, 2, "是")
-		} else if showRequired {
-			setCell(t, *row, 2, "否")
+		if showRequired {
+			loc := f.Location
+			if loc == "" {
+				loc = "body"
+			}
+			_ = t.SetCellFormattedText(*row, 2, loc, &document.TextFormat{
+				FontColor: "2563eb",
+				Bold:      true,
+			})
+			reqVal := "否"
+			if f.Required {
+				reqVal = "是"
+			}
+			setCell(t, *row, 3, reqVal)
+			setCell(t, *row, 4, f.Description)
 		} else {
-			setCell(t, *row, 2, "")
+			setCell(t, *row, 2, f.Description)
+			mergeRow(t, *row, 2, 4)
 		}
-		setCell(t, *row, 3, f.Description)
 		*row++
 	}
 }
