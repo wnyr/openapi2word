@@ -27,7 +27,7 @@ import {
   parseByUrl
 } from './api';
 
-const { Header, Content } = Layout;
+const { Header, Content, Footer } = Layout;
 const { Title, Text } = Typography;
 
 function buildTree(doc: APIDocument): DataNode[] {
@@ -395,6 +395,9 @@ export default function App() {
           </Row>
         )}
       </Content>
+      <Footer style={{ textAlign: 'center', color: '#64748b' }}>
+        © {new Date().getFullYear()} OpenAPI2Word. <a href="https://github.com/wnyr/openapi2word" target="_blank" rel="noreferrer">GitHub</a>
+      </Footer>
 
       {doc && (
         <div className="floating-bar">
